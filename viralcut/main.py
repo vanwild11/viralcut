@@ -26,6 +26,13 @@ class ProjectIn(BaseModel):
     prepare_only: bool = False
 
 
+class DiscoveryIn(BaseModel):
+    audience: str = Field(default="ru", pattern="^(ru|en)$")
+    topic: str = Field(default="general", pattern="^(general|business|science|psychology|comedy|gameplay)$")
+    query: str = Field(default="", max_length=120)
+    sort: str = Field(default="recommended", pattern="^(recommended|views)$")
+
+
 class PipIn(BaseModel):
     enabled: Optional[bool] = None
     cam: Optional[Dict[str, Any]] = None
@@ -101,6 +108,8 @@ MAX_FONT_BYTES = 24 * 1024 * 1024
 async def _lifespan(_app: FastAPI):
     """Побочные эффекты старта — здесь, а не на импорте модуля."""
     db.init_db()
+    from . import youtube
+    youtube.recover()
     db.reset_stale_jobs()
     custom_fonts.sync()
     # пробный кадр GPU — в фоне: /api/health не должен ждать энкодер
@@ -113,6 +122,8 @@ async def _lifespan(_app: FastAPI):
 # CORS не нужен: страница отдаётся с того же origin, что и API. Без него чужая
 # вкладка в браузере не может дёргать локальный сервер (SSRF/забивка диска).
 app = FastAPI(title="ViralCut", version=__version__, lifespan=_lifespan)
+from .youtube import router as youtube_router
+app.include_router(youtube_router)
 
 
 @app.middleware("http")
@@ -430,6 +441,117 @@ def create_project(body: ProjectIn) -> Dict[str, Any]:
     else:
         jobs.submit_project(project["id"])
     return project
+
+
+@app.post("/api/projects/{pid}/composition")
+def project_composition(pid: str, body: Dict[str, Any]):
+    from . import composition
+    project = db.get_project(pid)
+    if not project:
+        raise HTTPException(404, "Проект не найден")
+    if jobs.is_running(pid):
+        raise HTTPException(409, "Дождитесь завершения обработки проекта")
+    try:
+        conf = composition.validate(body)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "Проверьте файлы и параметры композиции") from None
+    options = {**(project.get("options") or {}), "composition": conf}
+    db.update_project(pid, options=options)
+    clips = db.list_clips(pid)
+    if clips:
+        db.update_project(pid, status="running", stage="Пересборка композиции", progress=0, error=None)
+    for clip in clips:
+        jobs.submit_rerender(clip["id"], {})
+    return {"ok": True, "clips": len(clips)}
+
+
+@app.post("/api/composition/upload")
+async def upload_composition(kind: str = Form(...), file: UploadFile = File(...)):
+    from . import composition
+    if kind not in ("logo", "game", "ad"):
+        raise HTTPException(400, "Неизвестный тип файла")
+    composition.ASSETS.mkdir(parents=True, exist_ok=True)
+    temp = composition.ASSETS / (uuid.uuid4().hex + ".upload")
+    try:
+        total = 0
+        with temp.open("wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > 200 * 1024 * 1024:
+                    raise ValueError("Лимит файла — 200 МБ")
+                out.write(chunk)
+        target = composition.ASSETS / (uuid.uuid4().hex + (".png" if kind == "logo" else ".mp4"))
+        if kind == "logo":
+            from PIL import Image
+            with Image.open(temp) as image:
+                image.thumbnail((2048, 2048))
+                image.convert("RGBA").save(target)
+        else:
+            info = utils.probe(temp)
+            if not 1 <= info["duration"] <= (120 if kind == "ad" else 600):
+                raise ValueError("Реклама: 1–120 секунд; игра: 1–600 секунд")
+            temp.replace(target)
+        return {"id": target.name, "name": file.filename}
+    except (ValueError, utils.MediaError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from None
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+@app.get("/api/composition/assets/{asset_id}")
+def composition_asset(asset_id: str):
+    from . import composition
+    try:
+        path=composition.asset(asset_id)
+    except ValueError as exc:
+        raise HTTPException(404,str(exc)) from None
+    return FileResponse(path, media_type="image/png" if path.suffix==".png" else "video/mp4")
+
+
+@app.get("/api/composition/game-info/{asset_id}")
+def composition_game_info(asset_id: str):
+    from . import composition
+    try:
+        path=composition.asset(asset_id)
+        if path.suffix!='.mp4': raise ValueError("Нужен видеофайл")
+        start,length=composition.gameplay_window(path)
+        return {"start":start,"length":length,"duration":utils.probe(path)["duration"]}
+    except ValueError as exc:
+        raise HTTPException(400,str(exc)) from None
+
+
+class GameImportIn(BaseModel):
+    video_id: str = Field(pattern=r"^[A-Za-z0-9_-]{11}$")
+
+
+@app.post("/api/composition/game")
+def import_game(body: GameImportIn):
+    from . import composition, downloader
+    from tempfile import TemporaryDirectory
+    composition.ASSETS.mkdir(parents=True, exist_ok=True)
+    try:
+        with TemporaryDirectory(dir=composition.ASSETS) as tmp:
+            url = "https://www.youtube.com/watch?v=" + body.video_id
+            duration = float(downloader.probe(url).get("duration") or 0)
+            if duration <= 0:
+                raise ValueError("Не удалось определить длительность игры")
+            begin = max(0., (duration - 180.) / 2.)
+            path = downloader.download_section(url, Path(tmp), begin,
+                                               min(duration, begin + 180.), max_height=720)
+            target = composition.ASSETS / (uuid.uuid4().hex + ".mp4")
+            path.replace(target)
+        return {"id": target.name, "name": "Игра с YouTube (участок из середины записи)"}
+    except Exception:
+        raise HTTPException(502, "Не удалось скачать игру. Попробуйте другой ролик или загрузите свой файл.") from None
+
+
+@app.post("/api/discovery")
+def discover_videos(body: DiscoveryIn) -> Dict[str, Any]:
+    from . import discovery
+    try:
+        return discovery.recommend(body.audience, body.topic, body.query.strip(), body.sort)
+    except Exception:
+        raise HTTPException(502, "Не удалось получить рекомендации YouTube. Проверьте подключение и повторите поиск.") from None
 
 
 @app.post("/api/probe")

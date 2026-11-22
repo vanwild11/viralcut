@@ -89,7 +89,7 @@ if IS_WIN:
     ]
 
 for package in ("ctranslate2", "faster_whisper", "tokenizers", "onnxruntime", "av",
-                "huggingface_hub", "imageio_ffmpeg", "cv2"):
+                "huggingface_hub", "imageio_ffmpeg", "cv2", "googleapiclient", "keyring"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
     datas += pkg_datas
     binaries += pkg_binaries

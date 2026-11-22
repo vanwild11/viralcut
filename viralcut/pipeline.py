@@ -61,6 +61,9 @@ def normalize_options(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         opts["target_dur"] = max(opts["min_dur"], min(opts["max_dur"], int(opts["target_dur"])))
     except Exception:
         opts.update({"min_dur": 15, "max_dur": 60, "target_dur": 32})
+    if opts.get("composition"):
+        from . import composition
+        opts["composition"] = composition.validate(opts["composition"])
     if opts["aspect"] not in render.ASPECTS:
         opts["aspect"] = "9:16"
     if opts["mode"] not in ("auto", "blur", "crop"):
@@ -656,6 +659,16 @@ def _render_one(source: Path, workdir: Path, clip: Dict[str, Any],
     out_dir.mkdir(parents=True, exist_ok=True)
     ass_dir.mkdir(parents=True, exist_ok=True)
 
+    composition_conf = (opts or {}).get("composition") or {}
+    panel_size = None
+    render_aspect = settings.get("aspect", "9:16")
+    if composition_conf.get("game"):
+        from . import composition
+        full_w, full_h = render.ASPECTS.get(render_aspect, (1080, 1920))
+        panel_h = int(full_h * .60) // 2 * 2
+        panel_size = (full_w, panel_h)
+        render_aspect = f"{full_w}:{panel_h}"
+
     # «Вырезать паузы»: считаем план склейки до рендера, а слова и кривую
     # кадрирования пересчитываем на новое время — иначе субтитры и кроп
     # отставали бы на длину вырезанного.
@@ -682,6 +695,13 @@ def _render_one(source: Path, workdir: Path, clip: Dict[str, Any],
             offset=int(settings.get("sub_offset", 0)),
             speed=settings.get("sub_speed", "calm"),
         )
+        if panel_size:
+            import re
+            # Render captions into the panel at full width, without squeezing a portrait clip.
+            panel_h = panel_size[1]
+            text = text.replace("PlayResY: 1920", f"PlayResY: {panel_h}")
+            text = re.sub(r"\\pos\(([^,]+),([0-9.]+)\)",
+                          lambda m: f"\\pos({m[1]},{float(m[2])*panel_h/1920:.1f})", text)
         ass_path = ass_dir / f"{clip['id']}.ass"
         ass_path.write_text(text, encoding="utf-8")
 
@@ -691,7 +711,7 @@ def _render_one(source: Path, workdir: Path, clip: Dict[str, Any],
     if mode == "auto":
         try:
             crop_path = reframe.build_crop_path(
-                source, clip["start"], clip["end"], aspect=settings.get("aspect", "9:16"))
+                source, clip["start"], clip["end"], aspect=render_aspect)
             if crop_path and spans:
                 crop_path = reframe.remap_crop_path(crop_path, spans, float(clip["start"]))
         except Exception:
@@ -707,8 +727,14 @@ def _render_one(source: Path, workdir: Path, clip: Dict[str, Any],
         focus_x=float(settings.get("focus_x", 0.5)), on_progress=on_progress,
         crop_path=crop_path, pip=pip_options(opts or {}),
         audio_track=int((opts or {}).get("audio_track") or 0),
-        spans=spans or None,
+        spans=spans or None, output_size=panel_size,
     )
+    if (opts or {}).get("composition"):
+        from . import composition
+        report = composition.apply(out_path, opts["composition"],
+                                   canvas=render.ASPECTS.get(settings.get("aspect", "9:16")),
+                                   main_prepared=bool(panel_size), variation=int(clip["idx"]))
+        db.update_clip(clip["id"], settings={**settings, "composition_info": report})
     thumb_path = workdir / "thumbs" / f"{clip['id']}.jpg"
     render.make_thumb(out_path, thumb_path, at=min(1.2, max(0.2, (clip["end"] - clip["start"]) * 0.15)))
     render.make_preview(out_path, workdir / "previews" / f"{clip['id']}.mp4")

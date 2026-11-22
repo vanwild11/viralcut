@@ -258,6 +258,8 @@ def _run_encode(cmd: List[str], duration: float,
     finally:
         timer.cancel()
         reader.join(timeout=2)
+        proc.stdout.close()
+        proc.stderr.close()
     return proc.returncode, tail, (stopped[0] if stopped else None)
 
 
@@ -318,14 +320,15 @@ def render_clip(source: Path, clip_start: float, clip_end: float, out_path: Path
                 crop_path: Optional[Dict[str, Any]] = None,
                 pip: Optional[Dict[str, Any]] = None,
                 audio_track: int = 0,
-                spans: Optional[List[Dict[str, float]]] = None) -> Dict[str, Any]:
+                spans: Optional[List[Dict[str, float]]] = None,
+                output_size: Optional[Tuple[int, int]] = None) -> Dict[str, Any]:
     """Рендерит вертикальный клип из окна исходника.
 
     spans — план склейки без пауз (analyze.cut_plan): отрезки исходника в
     абсолютных секундах. Если он задан, видео и звук режутся trim/atrim, затем
     склеиваются concat — паузы просто исчезают из клипа, а не ускоряются.
     """
-    w, h = ASPECTS.get(aspect, ASPECTS["9:16"])
+    w, h = output_size or ASPECTS.get(aspect, ASPECTS["9:16"])
     segments = _cut_spans(spans, clip_start, clip_end)
     if segments:
         duration = max(0.4, round(sum(seg["end"] - seg["start"] for seg in segments), 3))

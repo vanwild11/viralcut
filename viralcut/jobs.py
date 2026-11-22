@@ -107,6 +107,11 @@ def submit_process(pid: str) -> None:
 
 
 def submit_rerender(clip_id: str, payload: Dict[str, Any]) -> None:
+    clip = db.get_clip(clip_id)
+    if not clip:
+        return
+    pid = clip["project_id"]
+    _mark(pid, 1)
     db.update_clip(clip_id, status="rendering", error=None)
 
     def work() -> None:
@@ -114,5 +119,14 @@ def submit_rerender(clip_id: str, payload: Dict[str, Any]) -> None:
             pipeline.rerender_clip(clip_id, payload)
         except Exception as exc:  # noqa: BLE001
             db.update_clip(clip_id, status="error", error=str(exc)[:500])
+        finally:
+            _mark(pid, -1)
+            clips = db.list_clips(pid)
+            if clips and is_running(pid):
+                done = sum(c["status"] in ("ready", "error") for c in clips)
+                db.update_project(pid, stage=f"Пересборка: {done} из {len(clips)} готово", progress=done / len(clips))
+            if not is_running(pid) and clips and all(c["status"] in ("ready", "error") for c in clips):
+                failures = sum(c["status"] == "error" for c in clips)
+                db.update_project(pid, status="ready", stage="Готово" if not failures else "Готово с ошибками", progress=1)
 
     _clip_pool.submit(work)

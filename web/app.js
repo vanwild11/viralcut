@@ -327,6 +327,7 @@ function heroHTML() {
     <h1 class="hero-title">Одно видео —<br><span class="grad">десятки вирусных клипов</span></h1>
     <p class="hero-sub">Вставьте ссылку на YouTube, Twitch, TikTok, Instagram, VK или файл. Приложение найдёт самые цепляющие моменты, обрежет их в вертикаль с умным кадрированием по лицу, наложит субтитры с подсветкой слов и отрендерит готовые ролики.</p>
 
+    <button class="btn-ghost" id="discoverBtn">Найти видео на YouTube</button>
     <div class="url-box">
       <input id="urlInput" type="text" placeholder="https://youtube.com/watch?v=… или https://twitch.tv/videos/…" autocomplete="off" spellcheck="false" />
       <button class="btn-primary" id="startBtn">Сделать нарезки</button>
@@ -426,6 +427,7 @@ function heroHTML() {
           <div class="font-sample" id="fontSample" style="font-family:${FONT_CSS[o.subFont] || "VCMontserrat"}">ПРИМЕР СУБТИТРОВ</div>
         </div>
       </div>
+      <div class="composition-inline" id="compositionSettings"></div>
       <div class="opt">
         ${optIcon("access", "ico-gray")}
         <span class="opt-label">Доступ к источнику</span>
@@ -451,6 +453,9 @@ function heroHTML() {
 }
 
 function bindHero() {
+  $("#discoverBtn")?.addEventListener("click", openDiscovery);
+  const compositionRoot = $("#compositionSettings");
+  if (compositionRoot) openComposition(null, compositionRoot);
   const main = $("#main");
   $$(".seg", main).forEach((seg) => {
     const group = seg.dataset.group;
@@ -520,6 +525,7 @@ function bindHero() {
 function heroOptions() {
   const d = DUR_PRESETS[state.opts.dur] || DUR_PRESETS["20-45"];
   return {
+    composition: state.composition || {},
     count: state.opts.count,
     min_dur: d.min,
     max_dur: d.max,
@@ -876,7 +882,7 @@ function clipsGridHTML() {
     const p = project.id;
     const url = `/media/${p}/clips/clip_${String(c.idx + 1).padStart(2, "0")}.mp4?v=${Math.round(c.updated_at || 0)}`;
     const preview = c.has_preview ? `/media/${p}/previews/${c.id}.mp4?v=${Math.round(c.updated_at || 0)}` : url;
-    const thumb = c.thumb ? `/media/${p}/thumbs/${c.id}.jpg` : "";
+    const thumb = c.thumb ? `/media/${p}/thumbs/${c.id}.jpg?v=${Math.round(c.updated_at || 0)}` : "";
     const wide = (c.settings?.aspect || "9:16") === "16:9" ? " wide" : (c.settings?.aspect || "") === "1:1" ? " square" : "";
     const sp = c.settings?.score_parts || null;
     const partsLine = sp ? [
@@ -913,11 +919,13 @@ function clipsGridHTML() {
       <div class="clip-body">
         <div class="clip-title">${esc(c.title || "Без названия")}</div>
         ${partsLine ? `<div class="clip-parts">${partsLine}</div>` : ""}
+        ${c.settings?.composition_info?.ad_at != null ? `<p class="discovery-note">Реклама с ${fmtDur(c.settings.composition_info.ad_at)} · ${esc(c.settings.composition_info.ad_reason)}</p>` : ""}
         <div class="clip-tools">
           <a class="download-btn" href="${url}" download="${esc(c.title || "clip")}.mp4" data-download-clip="${c.id}" title="Скачать MP4">
             ${ICONS.download}<span>Скачать MP4</span>
           </a>
           <a class="srt-btn" href="/api/clips/${c.id}/subtitles.srt" download title="Скачать субтитры (SRT)">SRT</a>
+          <button class="youtube-publish-btn btn-ghost" data-youtube="${c.id}" type="button">${ICONS.play} На YouTube</button>
         </div>
       </div>
     </div>`;
@@ -1128,7 +1136,8 @@ function renderMain(force) {
   } else if (project.status === "error") {
     main.innerHTML = errorHTML(project);
   } else {
-    main.innerHTML = resultsHTML() + manualClipHTML() + pipCardHTML(state.detail);
+    main.innerHTML = resultsHTML() + manualClipHTML() + pipCardHTML(state.detail) + `<button class="btn-ghost" id="projectComposition">Игра, логотип и реклама — пересобрать клипы</button>`;
+    $("#projectComposition")?.addEventListener("click", () => openComposition(project.id));
     initPip(state.detail);
     bindClips();
   }
@@ -2175,12 +2184,14 @@ async function chooseFolder(kind) {
 }
 
 async function openSettings() {
+  let youtubeStatus = null;
+  try { youtubeStatus = await api('/api/youtube/status'); } catch (_) {}
   let conf = { encoder: "auto", download_dir: "", clips_dir: "", ask_folder: true, hw_available: null };
   try { conf = await api("/api/settings"); } catch (e) { console.error(e); }
   const modes = [["auto", "Авто"], ["gpu", "Видеокарта"], ["cpu", "Процессор"]];
   $("#modal").innerHTML = `
     <div class="modal-backdrop" data-close></div>
-    <div class="modal-panel" style="max-width:520px">
+    <div class="modal-panel settings-panel" style="max-width:520px">
       <div class="modal-head">
         <h3>Настройки</h3>
         <button class="icon-btn" data-close>${ICONS.close}</button>
@@ -2213,6 +2224,21 @@ async function openSettings() {
         <div class="set-section">
           <label class="toggle"><input type="checkbox" id="setAskFolder" ${conf.ask_folder ? "checked" : ""}/><span class="track"></span><span>Спрашивать папку при каждом сохранении</span></label>
         </div>
+        <div class="set-section" id="youtubeSettingsSection">
+          <div class="set-label">YouTube</div>
+          <div id="youtubeAccount" class="youtube-account">${youtubeAccountHTML(youtubeStatus)}</div>
+          <div class="youtube-settings-actions">
+            <label class="btn-ghost composition-upload">Выбрать OAuth-файл<input id="youtubeClientFile" type="file" accept="application/json,.json"></label>
+            <button class="btn-primary" type="button" id="youtubeConnect">Подключить канал</button>
+            <button class="btn-ghost" type="button" id="youtubeDisconnect" ${youtubeStatus?.connected?'':'hidden'}>Отключить</button>
+          </div>
+          <details class="youtube-setup"><summary>Как подключить впервые</summary>
+            <ol><li>В Google Cloud создайте проект и включите YouTube Data API v3.</li><li>Настройте OAuth consent screen. Если приложение в режиме Testing, добавьте свой Google-аккаунт в Test users.</li><li>Создайте OAuth client ID типа Desktop app, скачайте JSON и выберите его здесь.</li><li>Нажмите «Подключить канал» и разрешите доступ в окне Google.</li></ol>
+            <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Открыть Google Cloud ↗</a>
+          </details>
+          <div class="set-hint">Доступ сохраняется в системном хранилище паролей. Видео отправляется только по кнопке публикации.</div>
+          <p id="youtubeSettingsMessage" role="status" class="set-hint"></p>
+        </div>
         <div class="set-section">
           <div class="set-label">Журнал приложения</div>
           <div class="set-hint">Если приложение закрылось само (например, при «Пересобрать»), здесь видно, на каком этапе это случилось и с какой ошибкой.</div>
@@ -2226,6 +2252,7 @@ async function openSettings() {
       </div>
     </div>`;
   $("#modal").classList.remove("hidden");
+  bindYoutubeSettings();
   const diagBtn = $("#setDiag");
   if (diagBtn) diagBtn.addEventListener("click", async () => {
     const out = $("#setDiagOut");
@@ -2599,3 +2626,318 @@ async function withRetry(fn, tries = 4, delay = 500) {
   }
   setInterval(checkHealth, 20000);
 })();
+
+/* YouTube discovery: selecting a recommendation opens the existing confirmation. */
+function openDiscovery() {
+  const modal = $("#modal");
+  modal.innerHTML = `<div class="modal-backdrop" data-close="discovery"></div>
+    <div class="modal-panel discovery-panel"><div class="modal-head"><h3>Видео для нарезок</h3>
+    <button class="icon-btn" data-close="discovery" aria-label="Закрыть">${ICONS.close}</button></div>
+    <form id="discoveryForm" class="discovery-form">
+    <label>Аудитория<select name="audience"><option value="ru">Русскоязычная</option><option value="en">Англоязычная</option></select></label>
+    <label>Тема<select name="topic"><option value="general">Подкасты и интервью</option><option value="business">Бизнес</option><option value="science">Наука и технологии</option><option value="psychology">Психология</option><option value="comedy">Юмор</option></select></label>
+    <label>Свой запрос<input name="query" maxlength="120" placeholder="Например: космос / space" /></label>
+    <label>Порядок<select name="sort"><option value="recommended">Для нарезки</option><option value="views">Больше просмотров</option></select></label>
+    <button class="btn-primary" type="submit">Найти рекомендации</button></form>
+    <p class="discovery-note">Видео от 4 минут до 4 часов. Выбор языка ориентировочный, по заголовку. Скачивание начнётся только после вашего подтверждения качества и размера.</p>
+    <div id="discoveryResults" aria-live="polite"></div></div>`;
+  modal.classList.remove("hidden");
+  modal.querySelectorAll('[data-close="discovery"]').forEach(el => el.addEventListener("click", () => {
+    modal.classList.add("hidden"); modal.innerHTML = "";
+  }));
+  const form = $("#discoveryForm");
+  form.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    const results = $("#discoveryResults");
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true; results.innerHTML = '<p><span class="spinner"></span> Ищем видео на YouTube…</p>';
+    const values = Object.fromEntries(new FormData(form));
+    try {
+      const data = await api("/api/discovery", {method:"POST", body:JSON.stringify(values)});
+      if (!results.isConnected) return;
+      results.innerHTML = `<p class="discovery-note">${esc(data.notice)}</p><div class="discovery-grid">${data.items.map((v,i) => `
+        <article class="discovery-card"><img src="${esc(v.thumbnail)}" alt="" loading="lazy" />
+        <h4>${esc(v.title)}</h4><p>${esc(v.channel)} · ${fmtDur(v.duration)}</p>
+        <p>${v.views == null ? "Просмотры неизвестны" : Number(v.views).toLocaleString("ru-RU") + " просмотров"}</p>
+        <p>${esc(v.reason)} · язык по заголовку: ${esc(v.language_hint)}</p>
+        <a href="${esc(v.url)}" target="_blank" rel="noopener">Посмотреть на YouTube ↗</a>
+        <button class="btn-primary" data-pick="${i}">Выбрать для нарезки</button></article>`).join("")}</div>
+        ${data.items.length ? "" : "<p>Подходящие видео не найдены. Попробуйте другую тему или запрос на выбранном языке.</p>"}`;
+      results.querySelectorAll("[data-pick]").forEach(el => el.addEventListener("click", () => {
+        const v = data.items[Number(el.dataset.pick)];
+        state.opts.language = "auto";
+        askQuality(v.url);
+      }));
+    } catch (err) { if (results.isConnected) results.textContent = err.message; }
+    finally { btn.disabled = false; }
+  });
+}
+
+async function openComposition(projectId = null, mount = null) {
+  let saved = state.composition || {};
+  if (projectId) saved = state.detail?.project?.options?.composition || {};
+  const draft = {...saved};
+  const modal = mount || document.querySelector("#modal");
+  const $ = selector => modal.querySelector(selector);
+  modal.innerHTML = `<div class="modal-backdrop" data-close></div><div class="modal-panel discovery-panel">
+    <div class="modal-head"><h3>Игра, логотип и реклама</h3><button class="icon-btn" data-close aria-label="Закрыть">${ICONS.close}</button></div>
+    <div class="composition-body">
+    <p class="discovery-note">Настройки применяются ко всем клипам проекта. Это формат с дополнительным видеорядом, без обещаний влияния на внимание.</p>
+    <section class="composition-section"><h4>Видео с игрой</h4>
+    <label class="toggle"><input type="checkbox" id="gameEnabled" ${draft.game?'checked':''}><span class="track"></span><span> Добавить игровой видеоряд без звука</span></label>
+    <div class="discovery-form"><label>Игра<select id="gameStyle"><option value="auto">Автовыбор: Minecraft Parkour</option><option value="minecraft parkour gameplay no commentary">Minecraft Parkour</option><option value="subway surfers gameplay no commentary">Subway Surfers</option><option value="trackmania gameplay no commentary">Trackmania</option></select></label>
+    <label>Расположение игры<select id="gamePosition"><option value="bottom">Снизу</option><option value="top">Сверху</option></select></label></div>
+    <p class="discovery-note">Автовыбор предлагает Minecraft Parkour как непрерывный фон. Содержание основного ролика не анализируется. Игра повторяется до конца клипа.</p>
+    <button class="btn-ghost" id="gameSearch">Подобрать игровой ролик на YouTube</button>
+    <label class="btn-ghost composition-upload">Загрузить свою игру<input type="file" data-asset="game" accept="video/*"></label>
+    <p id="gameAsset">${draft.game?'Игровой файл выбран':'Игровой файл не выбран'}</p>
+    <video id="gamePreview" class="composition-preview" controls muted playsinline ${draft.game?`src="/api/composition/assets/${esc(draft.game)}"`:"hidden"}></video>
+    <label class="toggle"><input id="gameVariety" type="checkbox" ${draft.game_variety!==false?"checked":""}><span class="track"></span><span> Разный игровой участок для каждой нарезки</span></label>
+    <label>Начало игрового участка, секунды (пусто — авто)<input id="gameStart" type="number" min="0" step="0.5" value="${draft.game_start == null?'':Number(draft.game_start)}" placeholder="Авто: участок с движением"></label>
+    <p id="gameAnalysis" class="discovery-note">Проверьте, что в предпросмотре идёт игра. Автопоиск движения может ошибаться.</p><div id="gameResults" aria-live="polite"></div></section>
+    <section class="composition-section"><h4>Логотип на всех клипах</h4>
+    <label class="toggle"><input type="checkbox" id="logoEnabled" ${draft.logo?'checked':''}><span class="track"></span><span> Добавить логотип</span></label>
+    <label class="btn-ghost composition-upload">Загрузить изображение<input type="file" data-asset="logo" accept="image/png,image/jpeg,image/webp"></label>
+    <p id="logoAsset">${draft.logo?'Логотип выбран':'Поддерживается прозрачный PNG'}</p>
+    <label class="toggle"><input type="checkbox" id="logoBackground" ${draft.logo_remove_background?'checked':''}><span class="track"></span><span> Убрать однотонный фон логотипа</span></label>
+    <div class="discovery-form"><label>Положение<select id="logoPosition"><option value="top-right">Вверху справа</option><option value="top-left">Вверху слева</option><option value="bottom-right">Внизу справа</option><option value="bottom-left">Внизу слева</option></select></label>
+    <label>Размер (% ширины)<input id="logoSize" type="number" min="5" max="30" value="${Number(draft.logo_size)||9}"></label></div></section>
+    <section class="composition-section"><h4>Рекламная вставка</h4>
+    <label class="toggle"><input type="checkbox" id="adEnabled" ${draft.ad?'checked':''}><span class="track"></span><span> Вставить рекламу в каждый клип</span></label>
+    <label class="btn-ghost composition-upload">Загрузить рекламное видео<input type="file" data-asset="ad" accept="video/*"></label>
+    <p id="adAsset">${draft.ad?'Рекламный файл выбран':'Ролик от 1 до 120 секунд'}</p>
+    <p class="discovery-note">Ищем паузу в средней части готового клипа. Если паузы нет — вставляем в середину. После рекламы видео продолжается с места остановки. Проверьте монтаж перед публикацией.</p></section>
+    <p id="compositionStatus" role="status"></p><button class="btn-primary" id="compositionSave">${projectId?'Сохранить и пересобрать клипы':'Сохранить для нового проекта'}</button>
+    </div></div>`;
+  if (mount) {
+    const body=modal.querySelector('.composition-body');
+    modal.replaceChildren(body);
+    body.querySelector(':scope > .discovery-note')?.remove();
+    const labels=['Игра','Логотип','Реклама'];
+    body.querySelectorAll('.composition-section').forEach((section,i)=>{
+      const details=document.createElement('details');
+      details.className='composition-section composition-disclosure';
+      details.open=Boolean(draft[['game','logo','ad'][i]]);
+      const summary=document.createElement('summary');
+      summary.innerHTML=`<span class="composition-icon">${[ICONS.play,ICONS.spark,ICONS.play][i]}</span><span>${labels[i]}</span><small>${draft[['game','logo','ad'][i]]?'Включено':'Не добавлено'}</small>`;
+      section.querySelector('h4')?.remove();
+      details.append(summary,...Array.from(section.childNodes));
+      section.replaceWith(details);
+    });
+    $('#compositionSave').hidden=true;
+  } else modal.classList.remove('hidden');
+  $('#gamePosition').value = draft.game_position || 'bottom';
+  $('#logoPosition').value = draft.logo_position || 'top-right';
+  async function previewGame() {
+    if(!draft.game) return;
+    const video=$('#gamePreview'); const note=$('#gameAnalysis');
+    video.hidden=false; video.src='/api/composition/assets/'+encodeURIComponent(draft.game);
+    try {
+      const info=await api('/api/composition/game-info/'+encodeURIComponent(draft.game));
+      if(!video.isConnected)return;
+      const start=$('#gameStart').value===''?info.start:Number($('#gameStart').value);
+      const seek=()=>{video.currentTime=Math.min(start,Math.max(0,video.duration-1));};
+      if(video.readyState>=1)seek();else video.addEventListener('loadedmetadata',seek,{once:true});
+      note.textContent=`Автопоиск: с ${fmtDur(info.start)}, участок ${fmtDur(info.length)}. Проверьте его перед сохранением.`;
+    }catch(e){if(note.isConnected)note.textContent=e.message;}
+  }
+  $('#gameStart').addEventListener('change',()=>{const v=$('#gamePreview');if(v.src&&$('#gameStart').value!=='')v.currentTime=Number($('#gameStart').value);});
+  if(draft.game)previewGame();
+  let busy = 0;
+  const status = $('#compositionStatus');
+  const save = $('#compositionSave');
+  const lock = delta => { busy += delta; save.disabled = busy > 0; if(mount){const start=document.querySelector('#startBtn');if(start)start.disabled=busy>0;} };
+  modal.querySelectorAll('[data-asset]').forEach(input => input.addEventListener('change', async () => {
+    const file = input.files[0]; if (!file) return;
+    const kind = input.dataset.asset;
+    lock(1); status.textContent = 'Загружаем файл…';
+    try {
+      const body = new FormData(); body.append('kind',kind); body.append('file',file);
+      const result = await api('/api/composition/upload',{method:'POST',body});
+      draft[kind] = result.id; $(`#${kind}Asset`).textContent = result.name;
+      if(kind==='game'){$('#gameStart').value='';await previewGame();}
+      $(`#${kind}Enabled`).checked = true; syncInline(); status.textContent = 'Файл готов';
+    } catch(e) { status.textContent = e.message; }
+    finally { lock(-1); }
+  }));
+  $('#gameSearch').addEventListener('click', async () => {
+    const results = $('#gameResults');
+    const searchBtn = $('#gameSearch'); searchBtn.disabled = true;
+    results.textContent = 'Ищем игровой видеоряд…';
+    try {
+      const style = $('#gameStyle').value;
+      const data = await api('/api/discovery',{method:'POST',body:JSON.stringify({audience:'en',topic:'gameplay',query:style==='auto'?'':style,sort:'views'})});
+      if (!results.isConnected) return;
+      results.innerHTML = `<p class="discovery-note">Рекомендуем первый по просмотрам среди подходящих результатов. Выберите запись, на использование которой у вас есть разрешение. Скачается до 3 минут из середины записи (720p); затем найдём участок с движением.</p><div class="discovery-grid">${data.items.slice(0,6).map((v,i)=>`<article class="discovery-card"><img src="${esc(v.thumbnail)}" alt="" loading="lazy"><h4>${esc(v.title)}</h4><p>${v.views == null?'Просмотры неизвестны':Number(v.views).toLocaleString('ru-RU')+' просмотров'}</p><a href="${esc(v.url)}" target="_blank" rel="noopener">Посмотреть ↗</a><button class="btn-primary" data-game="${i}">${i===0?'Скачать рекомендованный':'Скачать этот ролик'}</button></article>`).join('')}</div>${data.items.length?'':'Подходящие записи не найдены. Загрузите свой файл.'}`;
+      results.querySelectorAll('[data-game]').forEach(button=>button.addEventListener('click',async()=>{
+        const v=data.items[Number(button.dataset.game)];
+        lock(1); results.querySelectorAll('button').forEach(b=>b.disabled=true); status.textContent='Скачиваем игровой участок и проверяем движение…';
+        try {
+          const result=await api('/api/composition/game',{method:'POST',body:JSON.stringify({video_id:v.id})});
+          draft.game=result.id; if (!status.isConnected) return;
+          $('#gameAsset').textContent=v.title; $('#gameEnabled').checked=true; $('#gameStart').value=''; await previewGame(); syncInline(); status.textContent='Игровой фон готов — проверьте предпросмотр';
+        } catch(e) { if(status.isConnected) status.textContent=e.message; }
+        finally {lock(-1);results.querySelectorAll('button').forEach(b=>b.disabled=false);}
+      }));
+    } catch(e) {results.textContent=e.message;} finally {searchBtn.disabled=false;}
+  });
+  function collectComposition(strict=false) {
+    const conf={game_position:$('#gamePosition').value,logo_position:$('#logoPosition').value,logo_size:Number($('#logoSize').value),logo_remove_background:$('#logoBackground').checked,game_start:$('#gameStart').value===''?null:Number($('#gameStart').value),game_variety:$('#gameVariety').checked};
+    for(const kind of ['game','logo','ad']) {
+      if($(`#${kind}Enabled`).checked) {
+        if(!draft[kind]) {
+          if(strict)throw new Error('Сначала выберите файл: '+({game:'игра',logo:'логотип',ad:'реклама'}[kind]));
+        } else conf[kind]=draft[kind];
+      }
+    }
+    return conf;
+  }
+  function syncInline() {
+    if(!mount)return;
+    state.composition=collectComposition();
+    const kinds=['game','logo','ad'];
+    mount.querySelectorAll('summary small').forEach((label,i)=>{
+      const enabled=$(`#${kinds[i]}Enabled`).checked;
+      label.textContent=enabled?(draft[kinds[i]]?'Включено':'Выберите файл'):'Выключено';
+      label.classList.toggle('is-on',enabled&&Boolean(draft[kinds[i]]));
+    });
+  }
+  if(mount)mount.addEventListener('change',syncInline);
+  save.addEventListener('click',async()=>{
+    let conf;
+    try {conf=collectComposition(true);}catch(e){status.textContent=e.message;return;}
+    try {
+      if(projectId) {
+        lock(1);
+        await api(`/api/projects/${projectId}/composition`,{method:'POST',body:JSON.stringify(conf)});
+        toast('Настройки сохранены, клипы пересобираются');
+      } else {state.composition=conf;toast('Настройки композиции сохранены');}
+      if(!mount)closeModal();
+    } catch(e) {status.textContent=e.message;} finally {if(projectId)lock(-1);}
+  });
+}
+
+
+/* ---------------- YouTube publishing ---------------- */
+function youtubeAccountHTML(status) {
+  if(!status)return '<span class="set-hint">Не удалось проверить подключение</span>';
+  if(status.connected)return `<span class="youtube-account-dot connected"></span><span><b>${esc(status.channel?.title||'Канал подключён')}</b><small>Готов к загрузке видео</small></span>`;
+  return `<span class="youtube-account-dot"></span><span><b>Канал не подключён</b><small>${esc(status.storage_error||status.auth_error||(status.connecting?'Ожидаем входа в Google…':status.configured?'OAuth настроен · можно подключить канал':'Подключите свой канал для публикации'))}</small></span>`;
+}
+
+function bindYoutubeSettings() {
+  const message=$('#youtubeSettingsMessage');
+  const update=async()=>{
+    if(!message.isConnected)return;
+    const status=await api('/api/youtube/status');
+    $('#youtubeAccount').innerHTML=youtubeAccountHTML(status);
+    $('#youtubeDisconnect').hidden=!status.connected;
+    $('#youtubeConnect').disabled=status.connected||status.connecting;
+    if(status.connecting&&message.isConnected)setTimeout(()=>update().catch(()=>{}),1500);
+    return status;
+  };
+  update().catch(()=>{});
+  $('#youtubeClientFile').addEventListener('change',async ev=>{
+    const file=ev.target.files[0];if(!file)return;
+    message.textContent='Проверяем OAuth-файл…';
+    try {
+      const body=new FormData();body.append('file',file);
+      await api('/api/youtube/client',{method:'POST',body});
+      message.textContent='Файл готов. Теперь подключите канал.';await update();
+    }catch(e){message.textContent=e.message;}
+  });
+  $('#youtubeConnect').addEventListener('click',async()=>{
+    const button=$('#youtubeConnect');button.disabled=true;
+    // Open a blank window during the user gesture so browser popup protection permits OAuth.
+    const native=window.pywebview?.api;
+    const authWindow=native?.open_url?null:window.open('about:blank','viralcut-youtube-auth');
+    try {
+      const result=await api('/api/youtube/connect',{method:'POST'});
+      if(native?.open_url)await native.open_url(result.authorization_url);
+      else if(authWindow)authWindow.location.href=result.authorization_url;
+      else {
+        message.innerHTML=`<a href="${esc(result.authorization_url)}" target="_blank" rel="noopener">Открыть вход в Google ↗</a>`;
+      }
+      await update();
+    }catch(e){authWindow?.close();message.textContent=e.message;button.disabled=false;}
+  });
+  $('#youtubeDisconnect').addEventListener('click',async()=>{
+    try {
+      const result=await api('/api/youtube/disconnect',{method:'POST'});
+      message.textContent=result.revoked?'Канал отключён.': 'Канал отключён здесь. Отозвать доступ в Google не удалось — это можно сделать в настройках Google-аккаунта.';
+      await update();
+    }catch(e){message.textContent=e.message;}
+  });
+}
+
+$('#main').addEventListener('click',ev=>{
+  const button=ev.target.closest('[data-youtube]');
+  if(button){ev.preventDefault();ev.stopPropagation();openYoutubePublish(button.dataset.youtube);}
+});
+
+async function openYoutubePublish(clipId) {
+  const clip=state.detail?.clips?.find(c=>c.id===clipId);if(!clip)return;
+  let status;
+  try{status=await api('/api/youtube/status');}catch(e){toast(e.message,'err');return;}
+  const project=state.detail.project;
+  const url=`/media/${project.id}/clips/clip_${String(clip.idx+1).padStart(2,'0')}.mp4?v=${Math.round(clip.updated_at||0)}`;
+  $('#modal').innerHTML=`<div class="modal-backdrop" data-close></div><div class="modal-panel youtube-panel">
+    <div class="modal-head"><h3>Публикация на YouTube</h3><button class="icon-btn" data-close aria-label="Закрыть">${ICONS.close}</button></div>
+    <div class="youtube-publish-layout"><div class="youtube-preview-column"><video controls playsinline preload="metadata" poster="/media/${project.id}/thumbs/${clip.id}.jpg?v=${Math.round(clip.updated_at||0)}" src="${esc(url)}#t=0.1"></video><p class="set-hint">Проверьте клип перед загрузкой. Вертикальный ролик подходящей длительности YouTube может отнести к Shorts.</p></div>
+    <div class="youtube-fields"><div class="youtube-account">${youtubeAccountHTML(status)}</div>
+    ${!status.connected?'<button class="btn-primary" id="youtubeGoSettings">Подключить канал в настройках</button>':''}
+    <form id="youtubePublishForm">
+      <label class="youtube-field">Название<input id="youtubeTitle" maxlength="100" required value="${esc((clip.title||'Новый клип').slice(0,100))}"><small id="youtubeTitleCount"></small></label>
+      <label class="youtube-field">Описание<textarea id="youtubeDescription" maxlength="5000" rows="4">${esc(clip.caption||'')}</textarea></label>
+      <label class="youtube-field">Доступ<select id="youtubePrivacy"><option value="private">Личное — только вы</option><option value="unlisted">Доступ по ссылке</option><option value="public">Открытый доступ — всем</option></select></label>
+      <label class="youtube-field">Аудитория<select id="youtubeAudience" required><option value="">Выберите аудиторию</option><option value="no">Видео не для детей</option><option value="yes">Видео для детей</option></select></label>
+      <label class="toggle"><input type="checkbox" id="youtubeSynthetic"><span class="track"></span><span>Реалистичный изменённый или ИИ-контент</span></label>
+      <label class="toggle"><input type="checkbox" id="youtubePaid" ${project.options?.composition?.ad?'checked':''}><span class="track"></span><span>Есть платная реклама или интеграция</span></label>
+      <label class="toggle"><input type="checkbox" id="youtubeSchedule"><span class="track"></span><span>Опубликовать по расписанию</span></label>
+      <label class="youtube-field" id="youtubeScheduleField" hidden>Дата и время (часовой пояс этого компьютера)<input type="datetime-local" id="youtubePublishAt"></label>
+      <p class="set-hint" id="youtubePublishHint">Видео будет загружено как личное. Позже доступ можно поменять в YouTube Studio.</p>
+      <button class="btn-primary" id="youtubeSubmit" type="submit" ${status.connected?'':'disabled'}>Загрузить на YouTube</button>
+    </form>
+    <div id="youtubeUploadStatus" class="youtube-upload-status" aria-live="polite"></div>
+    </div></div></div>`;
+  $('#modal').classList.remove('hidden');
+  $('#youtubeGoSettings')?.addEventListener('click',openSettings);
+  const form=$('#youtubePublishForm');const output=$('#youtubeUploadStatus');let currentJob=null;
+  const updateForm=()=>{
+    $('#youtubeTitleCount').textContent=`${$('#youtubeTitle').value.length} / 100`;
+    const scheduled=$('#youtubeSchedule').checked;
+    $('#youtubeScheduleField').hidden=!scheduled;$('#youtubePublishAt').required=scheduled;
+    if(scheduled)$('#youtubePrivacy').value='private';
+    $('#youtubePrivacy').disabled=scheduled;
+    $('#youtubePublishHint').textContent=scheduled?'Сейчас файл загрузится как личный. В выбранное время YouTube откроет доступ всем.':$('#youtubePrivacy').value==='public'?'После загрузки видео будет доступно всем.':'Видео загрузится с выбранным доступом.';
+  };
+  form.addEventListener('input',updateForm);form.addEventListener('change',updateForm);updateForm();
+  async function showJob(job) {
+    if(!output.isConnected)return;
+    currentJob=job;
+    const busy=['queued','uploading','cancelling'].includes(job.status);
+    $('#youtubeSubmit').disabled=busy||(job.status==='done'&&job.clip_updated_at===clip.updated_at)||!status.connected;
+    const labels={queued:'В очереди',uploading:'Загружаем видео',done:'Видео загружено',error:'Загрузка не завершена',interrupted:'Загрузка прервана',cancelled:'Загрузка отменена'};
+    output.innerHTML=`<b>${labels[job.status]||'Загрузка'}</b>${busy?`<progress max="100" value="${Number(job.progress)||0}"></progress><span>${Number(job.progress)||0}%</span><button type="button" class="btn-ghost" id="youtubeCancelUpload">Отменить загрузку</button>`:''}${job.url?`<a href="${esc(job.url)}" target="_blank" rel="noopener">Открыть видео на YouTube ↗</a>`:''}<p class="set-hint">${esc(job.error||job.message||'')}</p>`;
+    $('#youtubeCancelUpload')?.addEventListener('click',async()=>{
+      try{await api(`/api/youtube/uploads/${job.id}/cancel`,{method:'POST'});output.querySelector('b').textContent='Отменяем загрузку…';}catch(e){toast(e.message,'err');}
+    });
+    if(busy)setTimeout(async()=>{
+      if(!output.isConnected)return;
+      try{const jobs=await api('/api/youtube/uploads?clip_id='+encodeURIComponent(clipId));const next=jobs.find(j=>j.id===job.id);if(next)showJob(next);}catch(e){output.textContent='Не удалось обновить статус. Откройте публикацию ещё раз для проверки.';}
+    },1500);
+  }
+  form.addEventListener('submit',async ev=>{
+    ev.preventDefault();const button=$('#youtubeSubmit');button.disabled=true;
+    try {
+      const payload={title:$('#youtubeTitle').value.trim(),description:$('#youtubeDescription').value,privacy:$('#youtubePrivacy').value,made_for_kids:$('#youtubeAudience').value==='yes',synthetic_media:$('#youtubeSynthetic').checked,paid_promotion:$('#youtubePaid').checked};
+      if($('#youtubeSchedule').checked){
+        const when=new Date($('#youtubePublishAt').value);
+        if(!Number.isFinite(when.getTime())||when<=new Date())throw new Error('Выберите будущее время публикации');
+        payload.publish_at=when.toISOString();
+      }
+      const job=await api(`/api/youtube/clips/${clipId}/publish`,{method:'POST',body:JSON.stringify(payload)});showJob(job);
+    }catch(e){output.textContent=e.message;button.disabled=!status.connected;}
+  });
+  try{const jobs=await api('/api/youtube/uploads?clip_id='+encodeURIComponent(clipId));if(jobs.length)showJob(jobs[0]);}catch(_){}
+}
