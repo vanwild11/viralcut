@@ -100,6 +100,39 @@ cp -R "$MODEL" "$APPDIR/models/whisper-small"
 find "$APPDIR" -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
 find "$APPDIR" -name ".DS_Store" -delete 2>/dev/null || true
 
+# Статическая проверка: окно на Windows требует ровно эти версии и файлы.
+# Импорт WinForms проверяется на Windows через Verify.bat внутри архива.
+python3 - "$APPDIR" <<'PY'
+import sys
+from pathlib import Path
+
+site = Path(sys.argv[1]) / "site-packages"
+required = [
+    site / "uvicorn" / "__init__.py",
+    site / "proxy_tools" / "__init__.py",
+    site / "webview" / "platforms" / "winforms.py",
+    site / "webview" / "lib" / "Microsoft.Web.WebView2.Core.dll",
+    site / "webview" / "lib" / "Microsoft.Web.WebView2.WinForms.dll",
+    site / "webview" / "lib" / "WebBrowserInterop.x64.dll",
+    site / "pythonnet" / "runtime" / "Python.Runtime.dll",
+]
+missing = [str(path.relative_to(site)) for path in required if not path.is_file()]
+if missing:
+    raise SystemExit("В переносимой сборке нет обязательных файлов: " + ", ".join(missing))
+
+for package, expected in (("pythonnet", "3.0.5"), ("clr_loader", "0.2.7.post0")):
+    metadata = list(site.glob(f"{package}-*.dist-info/METADATA"))
+    if len(metadata) != 1:
+        raise SystemExit(f"Ожидался ровно один {package}-*.dist-info, найдено {len(metadata)}")
+    version = next(
+        (line.split(":", 1)[1].strip() for line in metadata[0].read_text("utf-8", "replace").splitlines()
+         if line.lower().startswith("version:")),
+        "",
+    )
+    if version != expected:
+        raise SystemExit(f"{package}: ожидалась версия {expected}, в сборке {version}")
+PY
+
 cat > "$APPDIR/python/python312._pth" <<'PTH'
 python312.zip
 .
@@ -167,6 +200,24 @@ echo.
 pause
 ''')
 
+write("Verify.bat", r'''@echo off
+chcp 65001 >nul
+setlocal
+cd /d "%~dp0"
+set "PYTHONNET_PYDLL=%CD%\python\python312.dll"
+set "PYTHONNET_RUNTIME=netfx"
+echo Проверка Python.NET, WinForms и WebView2...
+"%CD%\python\python.exe" -c "import importlib.metadata as m, fastapi, uvicorn, clr, webview; from webview.platforms import winforms; print('OK', 'pythonnet', m.version('pythonnet'), 'clr-loader', m.version('clr-loader'), 'pywebview', m.version('pywebview'), 'renderer', winforms.renderer)"
+if errorlevel 1 (
+    echo.
+    echo Проверка не пройдена. Пришлите вывод выше и %APPDATA%\ViralCut\app.log.
+    pause
+    exit /b 1
+)
+echo Проверка пройдена.
+pause
+''')
+
 write("ViralCut.vbs", r'''Set fso = CreateObject("Scripting.FileSystemObject")
 Set sh = CreateObject("WScript.Shell")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
@@ -187,9 +238,10 @@ write("README-WINDOWS-PORTABLE.txt", f'''ViralCut {version} — переноси
 
 Если окно не открылось
 ----------------------
-1. Запустите ViralCut-console.bat — там будет текст ошибки.
-2. Пришлите %APPDATA%\\ViralCut\\app.log (или запустите Diagnostics.bat).
-3. Windows 10 без WebView2 Runtime: поставьте «Microsoft Edge WebView2 Runtime»
+1. Запустите Verify.bat — он проверит Python.NET, WinForms и WebView2.
+2. Запустите ViralCut-console.bat — там будет текст ошибки.
+3. Пришлите %APPDATA%\\ViralCut\\app.log (или запустите Diagnostics.bat).
+4. Windows 10 без WebView2 Runtime: поставьте «Microsoft Edge WebView2 Runtime»
    с сайта Microsoft (на Windows 11 он обычно уже есть).
 
 Что проверить
@@ -207,8 +259,9 @@ write("README-WINDOWS-PORTABLE.txt", f'''ViralCut {version} — переноси
 
 Ограничения
 -----------
-- Сборка сделана на macOS из win_amd64-колёс и на живой Windows ещё не
-  проверялась. Если что-то не запускается — пришлите app.log.
+- Сборка собирается из win_amd64-колёс. Перед публикацией проверьте её на
+  Windows 10/11: Verify.bat и запуск окна. Если что-то не запускается —
+  пришлите app.log.
 - Приложение не подписано: SmartScreen → «Подробнее» → «Выполнить всё равно».
 - YouTube HD зависит от PO-token провайдера (Node внутри); при сбое — SD.
 ''')

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import email.parser
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -28,10 +29,15 @@ from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 TOP = [
-    "fastapi", "uvicorn[standard]", "yt-dlp", "imageio-ffmpeg", "faster-whisper",
+    "fastapi", "uvicorn", "yt-dlp", "imageio-ffmpeg", "faster-whisper",
     "av==15.1.0", "Pillow", "fonttools", "numpy", "opencv-python-headless",
-    "python-multipart", "bgutil-ytdlp-pot-provider", "pywebview==6.2.1", "pythonnet",
+    "python-multipart", "bgutil-ytdlp-pot-provider", "pywebview==6.2.1",
+    "pythonnet==3.0.5", "clr-loader==0.2.7.post0", "proxy-tools==0.1.0",
 ]
+
+# proxy-tools распространяется только sdist. Фиксируем хеш и собираем wheel
+# здесь же, иначе в Windows-сборку попадёт исходник без метаданных wheel.
+PROXY_TOOLS_SHA256 = "ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010"
 
 WINDOWS_ENV = {
     "sys_platform": "win32",
@@ -110,9 +116,8 @@ def main() -> int:
     sdists = args.dest / "sdists"
     sdists.mkdir(exist_ok=True)
 
-    top = list(TOP)
     # extras раскрываем вручную: pip с --platform вычисляет маркеры в macOS
-    queue = [Requirement(t) for t in top if "[" not in t] + [Requirement(t) for t in UVICORN_STANDARD]
+    queue = [Requirement(spec) for spec in [*TOP, *UVICORN_STANDARD]]
     resolved: dict[str, Version] = {}
     seen: set[tuple[str, str]] = set()
 
@@ -135,6 +140,21 @@ def main() -> int:
             if path is None:
                 print(f"!! не скачалось: {spec}")
                 continue
+            if name == "proxy-tools" and path.name.endswith(".tar.gz"):
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                if digest != PROXY_TOOLS_SHA256:
+                    raise SystemExit(f"proxy-tools: не совпал SHA-256: {digest}")
+                build = subprocess.run(
+                    [sys.executable, "-m", "pip", "wheel", "--no-deps",
+                     "--wheel-dir", tmp, str(path)],
+                    capture_output=True, text=True,
+                )
+                if build.returncode != 0:
+                    raise SystemExit(f"proxy-tools: не собрался wheel:\n{build.stderr}")
+                wheels = sorted(Path(tmp).glob("proxy_tools-*.whl"))
+                if len(wheels) != 1:
+                    raise SystemExit(f"proxy-tools: ожидался один wheel, найдено {len(wheels)}")
+                path = wheels[0]
             target = args.dest / path.name
             if not target.exists():
                 shutil.copy2(path, target)
